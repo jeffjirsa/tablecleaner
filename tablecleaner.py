@@ -57,14 +57,20 @@ def main():
         '(such as counters), TTLs are not available, and in others, the      '
         'application may want to lower TTLs and purge older data rather than '
         'waiting for the original TTL to be reached')
-    parser.add_argument('--host', help="Cassandra Endpoint")
-    parser.add_argument('--keyspace', help="Keyspace")
-    parser.add_argument('--table', help="Table")
-    parser.add_argument('--ttl', help="Delete rows with TTL higher than [ttl]")
-    parser.add_argument('--timestamp', help="Delete rows with WRITETIME lower than [timestamp]")
-    parser.add_argument('--match_column_name', help="Selective delete: only rows where this column has value specified by --match_column_value")
-    parser.add_argument('--match_column_value', help="Selective delete: only rows where --match_column_name has this value")
-    parser.add_argument('--test', action='store_true', help="Test only - print DELETE query but do not execute")
+    parser.add_argument('--host',    help="Cassandra Endpoint")
+    parser.add_argument('--keyspace',help="Keyspace")
+    parser.add_argument('--table',   help="Table")
+    parser.add_argument('--ttl',     help="Delete rows with TTL higher than [ttl]")
+    parser.add_argument('--timestamp', 
+                          help="Delete rows with WRITETIME lower than [timestamp]")
+    parser.add_argument('--match_column_name', 
+                          help="Selective delete: only rows where this column    "
+                               "has value specified by --match_column_value      ")
+    parser.add_argument('--match_column_value', 
+                          help="Selective delete: only rows if --match_column_name"
+                               "evauluates (as a string comparison) to this value")
+    parser.add_argument('--test', action='store_true', 
+                          help="Test only - print DELETE query but do not execute")
 
     args = parser.parse_args()
     
@@ -121,7 +127,7 @@ def main():
         selective_delete = True
         selective_delete_column_name = args.match_column_name
         selective_delete_column_value = args.match_column_value
-        default_log.debug("Selective delete - only rows where column %s evaluats to %s " % ( args.match_column_name, args.match_column_value ))
+        default_log.debug("Selective delete - only rows where column %s evaluates to %s " % ( args.match_column_name, args.match_column_value ))
     elif args.match_column_name is not None:
         default_log.error("--match_column_name requires --match_column_value")
         return -1
@@ -170,7 +176,7 @@ def main():
 
     for k in keys_itr:
         partition_query = """SELECT %s, WRITETIME(%s) AS cleanwritetime, TTL(%s) AS cleanttl FROM %s WHERE %s """ % (composite_key_str, columns[0], columns[0], table, key_where_str)
-        partition_params = dict() # Coerce to a dict instead of a tuple, so we can pass it back to the query
+        partition_params = dict() 
         for field in row_keys:
             partition_params[str(field)] = getattr(k, field)
 
