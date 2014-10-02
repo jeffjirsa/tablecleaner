@@ -5,8 +5,9 @@ tablecleaner is a simple python utility that iterates over a cassandra
 (CQL) column family and deletes data based on timestamps, ttls, or both. 
 It is ported from an internal tool, therefore it is lightly tested, 
 likely to have errors, and should not be used in production without 
-running first on a test cluster. It is offered as a convenience WITHOUT
-IMPLIED WARRANTY.
+running first on a test cluster. It is offered as a convenience, but
+expressly without warranty - this tool deletes data, and you need to 
+test to ensure it is deleting the RIGHT data.
 
 The tool uses the datastax driver with a fairly small ```fetch_size``` 
 (10) to page across the table. This will cause a large number of fairly 
@@ -32,10 +33,10 @@ CREATE TABLE counters (
 ```
 
 In this case,
-		- counter_name describes the counter, 
-		- counter_time_interval sets the resolution, 
-		- counter_time_partition is the first timestamp within that partition, and 
-		- counter_time is a clustering key to order the counters within the partition.
+* counter_name describes the counter, 
+* counter_time_interval denotes the resolution (year, month, day, hour, etc), 
+* counter_time_partition is the first timestamp within a partition, and 
+* counter_time is a clustering key to order the counters within the partition.
 
 Given that Cassandra does not (and likely will not) support TTLs on counters, if
 you wanted to remove high resolution (per-second) counters after 90 days, this 
@@ -45,10 +46,10 @@ In this case, the current unix timestamp is: ```1412212512```
 Using Cassandra timestamps in milliseconds, the cutoff is: ```1404436512000```
 If your timestamps are using microseconds, ADJUST ACCORDINGLY.
 
-The command becomes
+The command becomes:
 
 ```
-python tablecleaner.py  --host 127.0.0.1 --table "counters" --keyspace "demo" --timestamp 1404436512000 --match_column_name counter_time_interval --match_column_value hour
+python tablecleaner.py  --host 127.0.0.1 --table "counters" --keyspace "demo" --timestamp 1404436512000 --match_column_name counter_time_interval --match_column_value second
 ```
 
 
