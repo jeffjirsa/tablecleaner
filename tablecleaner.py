@@ -35,7 +35,32 @@ default_log.info('Starting up')
 cass_cluster = None
 cass_session = None
 
-def simple_execute(cql_query, cql_query_params={}, consistency_level=None, timeout=10.0, fetch_size=10):
+
+def keys_for_table(keyspace_name, table_name):
+    query = """SELECT column_name, type FROM system.schema_columns
+                WHERE keyspace_name=%(keyspace)s AND columnfamily_name=%(table)s """
+
+    params = {'keyspace': keyspace_name,
+              'table': table_name }
+    res = simple_execute(query, params)
+    columns = []
+    row_keys = []
+    clustering_keys = []
+    for r in res:
+        if r.type == 'partition_key':
+            row_keys.append(r.column_name)
+        elif r.type == 'regular':
+            columns.append(r.column_name)
+        elif r.type == 'clustering_key':
+            clustering_keys.append(r.column_name)
+ 
+    return {'row_keys': row_keys,
+            'clustering_keys': clustering_keys,
+            'columns': columns}
+
+
+
+def simple_execute(cql_query, cql_query_params={}, consistency_level=None, timeout=10.0, fetch_size=20):
     """ Simple wrapper around SimpleStatement to set a default CL=QUORUM, Timeout=10.0s, and fetch_size to use paginated results"""
     global cass_session
 
@@ -48,7 +73,75 @@ def simple_execute(cql_query, cql_query_params={}, consistency_level=None, timeo
     return cass_session.execute(query, parameters=cql_query_params, timeout=timeout)
 
 
+def keys_iterator(keyspace, table_name):
+    """
+        Iterate over specified keyspace.table_name and return the unique partition keys
+        SELECT DISTINCT will work for 2.0+, but will time out on any decently
+        sized keyspace, and will fail for old versions of cassandar
+        So, we'll try SELECT DISTINCT, and if it fails, we'll fall back to an
+        older, safer iterator using tokens
 
+    """
+        
+    keys = keys_for_table(keyspace, table_name)
+    row_keys = keys['row_keys']
+    clustering_keys = keys['clustering_keys']
+    columns = keys['columns']
+
+
+    try:
+        key_str = ", ".join(str(r) for r in row_keys)
+        key_where_str = """AND """.join((str(r) + "=%(" + str(r) + ")s ") for r in row_keys)
+
+        keys_query = """SELECT DISTINCT %s  FROM %s """ % (key_str, table_name)
+        keys_itr = simple_execute(keys_query)
+        for k in keys_itr:
+            yield k
+    except:
+        default_log.error("Exception while attempting to find all partition keys %s " % format_exc())
+        default_log.info("SELECT DISTINCT failed. This is not necessarily a surprise, "
+                         "it's likely that either rpc_timeout is exceeded or you are  "
+                         "running an older version of cassandra where SELECT DISTINCT "
+                         "is not supported, falling back to token iteration           ")
+
+
+        try:
+            starting_token_key_str = ", ".join(str(r) for r in row_keys)
+            starting_token_where_str = """AND """.join((str(r) + "=%(" + str(r) + ")s ") for r in row_keys)
+            query = """SELECT token(%s) as tablecleaner_token, %s FROM %s LIMIT 1""" % ( starting_token_key_str, 
+                                                                 starting_token_key_str, 
+                                                                 table_name )
+            starting_token_row = simple_execute(query)
+            if len(starting_token_row):
+                default_log.debug(starting_token_row[0])
+            else:
+                return
+
+            starting_token = starting_token_row[0].tablecleaner_token
+
+            more_tokens = True
+            while more_tokens:
+                default_log.debug("Iterating through tokens, more tokens %s , current token %s " % (more_tokens, starting_token))
+                query = """SELECT token(%s) as tablecleaner_token, %s FROM %s 
+                            WHERE token(%s) > %s LIMIT 20 """ % ( starting_token_key_str, 
+                                                                                  starting_token_key_str, 
+                                                                                  table_name, 
+                                                                                  starting_token_key_str,
+                                                                                  starting_token)
+                params = {'starting_token': starting_token}
+                rows = simple_execute(query, params)
+                if len(rows) < 1:
+                    more_tokens = False
+                else:
+                    for r in rows:
+                        yield r
+
+                        starting_token = r.tablecleaner_token
+
+        except:
+            default_log.error("Error: %s " % format_exc())
+            return
+        
 def main():
     global cass_session
     parser = argparse.ArgumentParser(description='tablecleaner is a script   '
@@ -144,22 +237,11 @@ def main():
     except:
         default_log.error("Cassandra connection error: %s " % format_exc())
 
-    query = """SELECT column_name, type FROM system.schema_columns
-                WHERE keyspace_name=%(keyspace)s AND columnfamily_name=%(table)s """
 
-    params = {'keyspace': keyspace,
-              'table': table }
-    res = simple_execute(query, params)
-    columns = []
-    row_keys = []
-    clustering_keys = []
-    for r in res:
-        if r.type == 'partition_key':
-            row_keys.append(r.column_name)
-        elif r.type == 'regular':
-            columns.append(r.column_name)
-        elif r.type == 'clustering_key':
-            clustering_keys.append(r.column_name)
+    keys = keys_for_table(keyspace, table)
+    row_keys = keys['row_keys']
+    clustering_keys = keys['clustering_keys']
+    columns = keys['columns']
 
     
     cass_session = cass_cluster.connect(keyspace)
@@ -167,14 +249,12 @@ def main():
     key_str = ", ".join(str(r) for r in row_keys)
     key_where_str = """AND """.join((str(r) + "=%(" + str(r) + ")s ") for r in row_keys)
 
-    keys_query = """SELECT DISTINCT %s  FROM %s """ % (key_str, table)
-    keys_itr = simple_execute(keys_query)
-
     composite_keys = clustering_keys + row_keys
     composite_key_str = ", ".join(str(r) for r in composite_keys)
     composite_key_where_str = """AND """.join((str(r) + "=%(" + str(r) + ")s ") for r in composite_keys)
 
-    for k in keys_itr:
+    for k in keys_iterator(keyspace, table):
+        default_log.debug(k)
         partition_query = """SELECT %s, WRITETIME(%s) AS cleanwritetime, TTL(%s) AS cleanttl FROM %s WHERE %s """ % (composite_key_str, columns[0], columns[0], table, key_where_str)
         partition_params = dict() 
         for field in row_keys:
